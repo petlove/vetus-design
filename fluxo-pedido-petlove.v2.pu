@@ -1,0 +1,141 @@
+@startuml
+
+skinparam maxmessagesize 200
+
+title Fluxo de vendas do Petlove Já
+
+box  "Aplicações Vetus" #Orange
+participant "ERP Legado" as erp_legado
+database "BD ERP" as erp_db
+participant "mantis"
+participant "hydra"
+end box
+queue "vetus.sqs.sales-orders" as queue_ecommerce_orders
+queue "vetus.topic.arn.change.order.status" as queue_status_change
+queue "vetus.topic.arn.inventory-changed (hamster)" as queue_inventory_change
+
+== Recebimento da Venda ==
+autonumber 1
+queue_ecommerce_orders o-> mantis: envia venda do e-commerce Petlove
+mantis -> erp_db: persiste venda com status **aguardando pagamento**
+mantis -> erp_db: atualiza estoque do produto
+mantis -> queue_inventory_change: publica mudança de estoque
+
+|||
+... aguarda confirmação do pagamento ...
+|||
+
+hydra o-> mantis: atualiza status da venda para **pendente**
+activate mantis
+mantis -> erp_db: atualiza status para **pendente**
+mantis -> queue_status_change: publica atualização de status
+deactivate mantis
+
+== Geração da Nota Fiscal ==
+
+autonumber 1
+erp_legado o--> erp_legado: operador fatura venda (""PetloveOrderBean.invoiceOrder"")
+activate erp_legado
+erp_legado -> erp_db: atualiza status da venda para **faturado**
+erp_legado -> erp_legado: gera nota fiscal
+erp_legado -> queue_status_change: publica atualização de status
+erp_legado -> erp_legado: redireciona para tela de fechamento de nota fiscal
+deactivate erp_legado
+
+== Entrega da Venda == 
+
+autonumber 1
+erp_legado o--> erp_legado: operador imprime comprovante de entrega (""PetloveOrderBean.imprimirComprovante"")
+erp_legado ->x?: arquivo é baixado na máquina do operador
+
+alt Retirada na Loja
+
+autonumber 1
+erp_legado o--> erp_legado: operador move venda para próximo status (""PetloveOrderBean.changeStatus"")
+activate erp_legado
+erp_legado -> erp_db: atualiza venda para **pronto para retirada**
+deactivate erp_legado
+
+... aguarda cliente ou entregador de aplicativo retirar e entregar o venda ...
+
+erp_legado o--> erp_legado: operador move venda para próximo status (""PetloveOrderBean.changeStatus"")
+activate erp_legado
+erp_legado -> erp_db: atualiza venda para **entregue**
+erp_legado -> queue_status_change: publica atualização de status
+erp_legado -> erp_db: atualiza estoque do produto
+erp_legado -> queue_inventory_change: publica mudança de estoque
+deactivate erp_legado
+
+else Envio por Transportadora
+
+... aguarda transportadora coletar ...
+
+autonumber 1
+hydra o--> mantis: atualiza venda para **enviado (ou com a transportadora)**
+activate mantis
+mantis -> erp_db: atualiza venda para **enviado**
+mantis -> mantis: publica atualização de status no tópico ""vetus.topic.arn.change.order.status""
+deactivate mantis
+
+group Tentativa de Entrega
+note across
+essa atualização para **entregue** também pode ser feita manualmente pelo operador
+endnote
+alt Entregue com Sucesso
+hydra o-> mantis: atualiza status da venda para **entregue**
+activate mantis
+mantis -> erp_db: atualiza venda para **entregue**
+mantis -> queue_status_change: publica atualização de status
+mantis -> erp_db: atualiza estoque do produto
+mantis -> queue_inventory_change: publica mudança de estoque
+deactivate mantis
+else Falha na Tentativa de Entrega
+hydra o-> mantis: atualiza status da venda para **falha na tentativa de entrega**
+activate mantis
+mantis -> erp_db: atualiza venda para **falha na tentativa de entrega**
+mantis -> queue_status_change: publica atualização de status
+else Excedido Limite de Tentativas de Entrega
+hydra o-> mantis: atualiza status da venda para **falha na entrega**
+activate mantis
+mantis -> erp_db: atualiza venda para **falha na entrega**
+mantis -> queue_status_change: publica atualização de status
+note over mantis
+Se optarmos por utilizar **entrega cancelada**, 
+iremos cancelar a venda e retornar os produtos ao estoque.
+Se quisermos deixar essa escolha na mão do vendedor 
+para que ele tente se comunicar com o cliente antes de
+cancelar a venda, podemos manter apenas como **falha na entrega**
+e informar aos operadores sobre o novo comportamento.
+endnote
+
+end
+end
+end
+
+
+
+
+== Cancelamento do Envio ==
+autonumber 1
+alt Cancelamento Manual
+erp_legado o--> erp_legado: operador cancela entrega da venda (""PetloveOrderBean.shippingCancel"")
+activate erp_legado
+erp_legado -> erp_db: atualiza venda para **entrega cancelada**
+erp_legado -> queue_status_change: publica atualização de status
+erp_legado -> erp_db: atualiza estoque do produto
+erp_legado -> queue_inventory_change: publica mudança de estoque
+erp_legado -> erp_legado: cancela nota fiscal
+erp_legado -> erp_db: atualiza nota fiscal para cancelada
+deactivate erp_legado
+else  Cancelado Automático
+hydra o-> mantis: atualiza venda para **entrega cancelada**
+activate mantis
+mantis -> erp_db: atualiza venda para **entrega cancelada**
+mantis -> queue_status_change: publica atualização de status
+mantis -> erp_db: atualiza estoque do produto
+mantis -> queue_inventory_change: publica mudança de estoque
+mantis -> mantis: cancela nota fiscal
+mantis -> erp_db: atualiza nota fiscal para cancelada
+deactivate mantis
+end
+@enduml

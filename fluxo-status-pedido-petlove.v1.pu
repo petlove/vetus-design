@@ -1,0 +1,77 @@
+@startuml
+
+title Fluxo de Status dos Pedidos de Venda Petlove
+
+floating note
+Os pedidos de venda do ecommerce da Petlove que passam 
+pelo Vetus podem ter os seguintes status:
+- pendente
+- faturado
+- pronto para retirada
+- aguardando pagamento (quando é usado?)
+- entregue
+- entrega cancelada (quando é usado?)
+- entregue para transportadora
+- saiu para entrega
+- falha na tentativa de entrega
+- falha na entrega
+end note
+
+start
+
+-> Pedido de Venda do Ecommerce
+é recebido no Vetus;
+
+:Venda muda para status **aguardando pagamento**;
+
+-> Operador verifica pedidos;
+
+if (Forma de pagamento é pelo Marketplace do Ifood?) then (sim)
+else (não)
+:Aguarda hydra confirmar pagamento do pedido;
+endif
+
+:Venda muda para status **pendente**;
+
+if (Operador consegue emitir nota?) then (sim)
+  :Venda muda para status **faturada**;
+
+  switch (Qual modalidade de entrega?)
+  case (Retirada na Loja ou Delivery)
+    :Venda muda para status 
+    **pronto para retirada**;
+    :Aguarda cliente ou entregador \ndo delivery retirar o pedido; <<continuous>>
+
+  case (Envio por Transportadora)
+    :Venda muda para status 
+    **enviado para transportadora**;
+    :Transportadora recebe o pedido; <<continuous>>
+    ->Transportador sai para entrega;
+    :Venda muda para status 
+    **saiu para entrega**;
+    while (Cliente recebeu o pedido?) is (não)
+      :Venda muda para
+      status **falha na tentativa de entrega**;
+      if (Excedeu limite de tentativas?) then (sim)
+        :Venda muda para status **falha na entrega**;
+        ->Encerra o fluxo;
+        stop;
+      endif;
+      backward :Transportadora realiza nova tentativa;
+
+      ->Não;
+      
+    endwhile (sim)
+  endswitch
+  :Venda muda para status **entregue**;
+  ->Encerra o fluxo;
+  stop
+else (não)
+  :Venda muda para status **entrega cancelada**;
+  ->Encerra o fluxo;
+  stop
+endif
+
+
+stop
+@enduml
